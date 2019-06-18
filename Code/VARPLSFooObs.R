@@ -1,0 +1,430 @@
+# Actualizacion 20/04/2019
+remove(list=ls())
+
+# libraries
+library(vars) #tiene varias dependencia
+library(pls)
+library(psych)
+
+# path
+dt.file <- "C:\\Users\\fou-f\\Documents\\GitHub\\MCE2\\4\\Tesina\\Code\\"
+
+# config model
+
+# two models
+h <- 6 # numero de observaciones fuera de muestra
+lag.max <- 6
+
+
+# var-pls model
+runs <- 100
+crit <- "FPE(n)"
+season <- NULL
+ec.det <- c("none", "const", "trend", "both")
+
+# var model
+seas.min <- 1
+seas.max <- 6# cambio para compara modelos
+lag.min <- 1
+
+# functions name
+source(paste(dt.file, "funcion_pls_varsObs.r", sep = ""))
+
+# load data
+data <- read.csv(paste(dt.file, "CompendioObservatorio.csv", sep = ""), row.names = 1)
+
+# Que todas las series tengan la misma longitud o en su caso 'amputar'
+data <- na.omit(data)
+# Test de raices unitarias
+library(tseries)
+apply(data,2, function(x) adf.test(diff(x))$p.value  ) # casi todas son I(1)
+# monetary model P=f(m0,y,r)
+# ver que pasa sin los logs
+data <- log((data))
+apply(data,2, function(x) adf.test(x)$p.value  ) # lo son casi todas
+borrar <- c('Actividades.Primarioas', 'Construccion', 'Energia',
+            'Billetes.y.monedas', 'Industria.EUA',
+            'Precios.EUA')
+match(borrar, names(data))
+data[, borrar] <- NULL
+ts.plot(ts(scale(data)), col=1:11)
+# delete data for forecast
+n <- nrow(data)-h
+data.into <- data[1:n,]
+data.fore <- data[c(n+1):c(n+h), ]
+K <- ncol(data)
+
+# p order
+# determinaci?n del orden del var por medio
+p <- VARselect(y= data.into, lag.max = lag.max, type = "const",
+               season = season, exogen = NULL)$selection[crit]
+#p <- 3
+# johansen test
+joha <- ca.jo(data, K = p, ecdet = "const", season = season)
+summary(joha)
+# esta relacion de cointegracion va a tener que reescribirse para un caso mas general-mas variables-
+eq <- paste("Inflacion  ", abs(round(joha@V[2,1], 2)), colnames(joha@V)[2],
+            abs(round(joha@V[3,1], 2)), colnames(joha@V)[3],
+            abs(round(joha@V[4,1], 2)), colnames(joha@V)[4],
+            abs(round(joha@V[5,1], 2)), colnames(joha@V)[5],
+            abs(round(joha@V[6,1], 2)), colnames(joha@V)[6],
+            abs(round(joha@V[7,1], 2)), colnames(joha@V)[7],
+            abs(round(joha@V[8,1], 2)), colnames(joha@V)[8],
+            abs(round(joha@V[9,1], 2)), colnames(joha@V)[9],
+            abs(round(joha@V[10,1], 2)), colnames(joha@V)[10],
+            abs(round(joha@V[11,1], 2)), colnames(joha@V)[11]
+            )
+
+opp <- par(mfrow = c(1,1))
+ts.plot(data[,1], col = 1, lty = 1, lwd = 1, ylab = "log(Inflación)")
+title("log(Inflación)")
+
+
+# esto solo presenta la primer relacion de cointegracion
+# esta seccion se encarga de multiplicar los datos m?s un intercepto (por que el test de johansen dice que
+# hay cointegracion con intercepto) por los vectores propios normalizados con respecto a la primer variable
+ts.plot(cbind(as.matrix(data),1)%*%joha@V[,1,drop=FALSE], col = 4, lty = 1, lwd = 1,
+        ylab = "cointegration")
+title(eq)
+par(opp)
+
+# como hay cointegracion existe una representaci?n VAR del VEC
+var.vec <- vec2var(joha, r =1 ) # chcar el parametro 'r'
+
+mat.fit <- cbind(data[, 1], c(rep(NA, p), fitted(var.vec)[,1]))
+colnames(mat.fit) <- c("p", "p(fitted)")
+
+# se dibuja la serie original con el ajuste que se hace de pasar de VEC a VAR
+ts.plot(ts(mat.fit, start = as.numeric(c(unlist(strsplit(row.names(data[1,]), '/'))[c(3,2)])),
+           frequency = 12), col = c(1,2), lty = 1,
+        lwd = 1, ylab = "log(p)")
+legend("topleft", colnames(mat.fit), lty = 1, lwd = 1, col = c(1,2))
+title(paste("VECM(",p,"): p series", sep = ""))
+
+list.fore.var.pls <- list.mape.var.pls <- list()
+
+# aqui se estiman las p*K componentes y se construyen los intervalos de confianza
+ncomp <- 1
+for(ncomp in 1:c(K*p))
+{
+    print(ncomp)
+    # ncomp (int): numero de componentes a considerar en PLS
+    # VAR-PLS estimation
+    var.pls1 <- var.pls(x = data.into, p = p, ncomp = ncomp, season = season) # regresa un objeto de la clase 'var.pls'
+
+    # forecast to h head with ci via bootstrap
+    fore.var.pls <- ci.var.pls.boot(object = var.pls1, n.ahead = h, runs = runs,
+                                    exog.new = NULL,
+                                    seed = 12345, ci = 0.10)
+
+    # mape stastitic
+    mape.var.pls <- round(sapply(1:K, function(x) abs((fore.var.pls$Forecast[,x] -
+                                                           data.fore[,x])/data.fore[,x]))*100, 2)
+    colnames(mape.var.pls) <- colnames(data.into)
+
+    # save results
+    list.fore.var.pls[[ncomp]] <- fore.var.pls
+    list.mape.var.pls[[ncomp]] <- mape.var.pls
+}
+
+# two models var: estimation with delete h observations in the sample and
+# to make the forecast
+
+# combination models
+c.num.cols <- ncol(data.into)
+idx.matrix  <- as.data.frame(matrix(0, (lag.max - 1)*(seas.max - 1)*
+                                        length(ec.det), 3)) # aqui se ve porque salen 484 modelos
+colnames(idx.matrix) <- c("seas", "lag", "ec.det") # esta matriz sirve como indicadora, contiene todas las combinaciones de
+# lags, setacionalidades y formas (none, constante, trend y ambos)
+idx.matrix[,"seas"] <- rep(2:seas.max, each = (length(ec.det))*(lag.max - 1))
+idx.matrix[,"lag"] <- rep(c(2:lag.max), nrow(idx.matrix)/(lag.max - 1))
+idx.matrix[,"ec.det"] <- rep(rep(ec.det, each = lag.max - 1), seas.max - 1)
+
+# benchmark model ar(1)
+ar1 <- sapply(1:ncol(data.into), function(x)
+    predict(arima(data.into[1:c(nrow(data.into)-h), x],
+                  order = c(1,0,0)), n.ahead = h)$pred)
+colnames(ar1) <- colnames(data.into)
+
+# save data for test
+test.data <- data.into[-c(1:c(nrow(data.into)-h)), ] # creo que esta linea se repite
+test.data- data.fore
+# matrix test
+mat.test <- matrix(Inf, nrow(idx.matrix), 7)
+colnames(mat.test) <- c("mape", "mdape", "rmspe", "rmdspe", "mrae",
+                        "mdrae", "gmrae")
+
+# runs all models
+for(i in 1 : nrow(idx.matrix)){
+    # specification models
+    i.row <- idx.matrix[i, ]
+    i.lag <- i.row[,"lag"]
+    ec.det <- i.row[,"ec.det"]
+    seas <- i.row[,"seas"]
+
+    # season 2 is null
+    if(seas == 2)
+        seas <- NULL
+
+    # test forecast 1
+    var1.test <- VAR(data.into[1:c(nrow(data.into)-h), ], p = i.lag,
+                     type = ec.det, season = seas)
+    fore.test <- predict(var1.test, n.ahead = h)
+
+    # matrix forecast
+    fore <- sapply(1:ncol(data.into), function(x) fore.test$fcst[[x]][,"fcst"]) # extrae los pronosticos de todas las variables en los h orizontes
+
+    mat.graph <- cbind(c(data.into[1:c(nrow(data.into)-h), 1], test.data[,1]),
+                       c(rep(NA, nrow(data.into[1:c(nrow(data.into)-h), ])),
+                         fore[,1])) # junta los datos test y los de pronostico
+
+    ts.plot(ts(mat.graph[-c(1:84),], start = as.numeric(c(unlist(strsplit(row.names(data.into[85,]), '/'))[c(3,2)])), frequency = 12),
+            col = c(1,2), lty = 1, lwd = 1)  #cuidado con este indice
+    abline(v = 2008 + 2/12, lty = 2, lwd = 1, col = "gray")
+    legend("topleft", c("p real", "forecast VAR"), col = c(1,2), lty = 1, lwd = 1)
+    title("VAR[i], out sample test for selected model")
+
+    # error with model 1
+    p.test <- sapply(1:ncol(data.into), function(x) c(test.data[,x]-fore[,x])/
+                         test.data[,x]*100)
+    colnames(p.test) <- colnames(data.into)
+
+    # statsitics for error (model 1)
+    mape <- colMeans(abs(p.test))
+    mdape <- apply(p.test, 2, function(x) median(abs(x)))
+    rmspe <- sqrt(colMeans(p.test^2))
+    rmdspe <- sqrt(apply(p.test, 2, function(x) median(x^2)))
+
+    # relative errors for model 1
+    r.test <- sapply(1:ncol(data.into), function(x) c(test.data[,x] -
+                                                          fore[,x])/c(test.data[,x] - ar1[,x]))
+
+    # statistics for relative error (model 1)
+    mrae <- colMeans(abs(r.test))
+    mdrae <- apply(r.test, 2, function(x) median(abs(x)))
+    gmrae <- apply(r.test, 2, function(x) geometric.mean(abs(x)))
+
+    # statistics models
+    mat.test[i,"mape"] <- mape[1]
+    mat.test[i,"mdape"] <- mdape[1]
+    mat.test[i,"rmspe"] <- rmspe[1]
+    mat.test[i,"rmdspe"] <- rmdspe[1]
+    mat.test[i,"mrae"] <- mrae[1]
+    mat.test[i,"mdrae"] <- mdrae[1]
+    mat.test[i,"gmrae"] <- gmrae[1]
+}
+
+# selected model
+var.i <- apply(mat.test, 2, function(x) which(x == min(x)))
+
+apply(mat.test, 2, function(x) min(x, na.rm = TRUE))
+
+# save results
+list.fore <- list.ci <- list()
+
+# vars models selected
+for(i in 1:length(var.i)){
+
+    # specification optimal
+    seas <- idx.matrix[var.i[i],"seas"]
+
+    if(seas == 2)
+        seas <- NULL
+
+    lags <- idx.matrix[var.i[i],"lag"]
+    type <- idx.matrix[var.i[i],"ec.det"]
+
+    # var model
+    var1 <- VAR(data.into, p = lags, type = type, season = seas)
+    fore.var <- predict(var1, n.ahead = h)
+
+    # fore
+    list.fore[[i]] <- sapply(1:ncol(data.into),
+                             function(x) fore.var$fcst[[x]][,"fcst"])
+    # ci
+    list.ci[[i]] <- sapply(1:ncol(data.into),
+                           function(x) fore.var$fcst[[x]][,"CI"])
+    colnames(list.fore[[i]]) <- colnames(list.ci[[i]]) <- colnames(data.into)
+}
+names(list.fore) <- names(list.ci) <- colnames(mat.test)
+
+# output model
+objective <- names(data)[1]
+
+# integral forecast
+fore.var <- sapply(1:length(var.i), function(x) list.fore[[x]][,objective])
+colnames(fore.var) <- colnames(mat.test)
+
+# integral ci
+ci.var <- sapply(1:length(var.i), function(x) list.ci[[x]][,objective])
+colnames(ci.var) <- colnames(mat.test)
+
+# unique integral (mean & distribution quantile)
+fore.int.var <- apply(fore.var, 1, function(x) quantile(x, probs = 0.5))
+ci.int.var <- apply(ci.var, 1, function(x) quantile(x, probs = 0.5))
+
+# mape with integral forecast
+mape.int.var <- as.matrix(round(c(abs(c(data.fore[,objective] -
+                                            fore.int.var)/data.fore[,objective])), 4)*100)
+colnames(mape.int.var) <- objective
+
+# mape var models
+mape.vars <- sapply(1:length(var.i),
+                    function(x)
+                        round(c(abs(c(data.fore[,objective] - fore.var[,x])/
+                                        data.fore[,objective])), 4)*100)
+colnames(mape.vars) <- colnames(mat.test)
+
+
+mape.var.pls <- sapply(1:c(K*p), function(x) list.mape.var.pls[[x]][,objective])
+
+# models comparative
+# all VAR-PLS vs integral VAR
+comp1 <- sapply(1:c(K*p), function(x) mape.int.var > mape.var.pls[,x]) # errores de var mayores al pls
+round(sum(comp1)/length(comp1), 4)*100 # es peor
+
+# all VAR selected vs all VAR-PLS
+comp2 <- list()
+for(i in 1:length(var.i))
+{
+    comp2[[i]] <- sapply(1:c(K*p),
+                         function(x) mape.vars[,i] > mape.var.pls[,x]) #donde fue peor el var normal que el pls
+}
+names(comp2) <- colnames(mat.test)
+round(sapply(1:length(var.i), function(x) sum(comp2[[x]])/
+                 length(comp2[[x]])), 4)*100
+
+# integral VAR-PLS
+fore.var.pls <- sapply(1:c(K*p),
+                       function(x) list.fore.var.pls[[x]]$Forecast[,objective])
+
+# forecast
+fore.int.var.pls <- apply(fore.var.pls, 1, function(x) quantile(x, probs = 0.5))
+
+
+# mape with integral forecast
+mape.int.var.pls <- round(abs(c(data.fore[,objective] - fore.int.var.pls)/
+                                  data.fore[,objective]), 4)*100
+
+# integral VAR vs integral VAR-PLS
+comp3 <- mape.int.var > mape.int.var.pls
+sum(comp3)/h
+
+# alls VAR cs integral VAR-PLS
+comp4 <- mape.vars > mape.int.var.pls
+round(sum(comp4)/length(comp4), 4)*100
+
+mean(mape.int.var.pls)
+
+# graph 1
+inf <- function(x, q = 12)
+{
+    inf.x <- c()
+    for(i in q:c(length(x) - 1))
+        inf.x[i - c(q-1)] <- c(x[i + 1]/x[i - c(q-1)])*100-100
+
+    return(inf.x)
+}
+
+data.g <- data
+data.g[,4] <- data[,4] + 2 # por qu? le suma dos ??
+# este grafico no tiene sentido
+ts.plot(ts(data.g[,c(1,3,4)], start = as.numeric(c(unlist(strsplit(row.names(data[1,]), '/'))[c(3,2)])), frequency = 12), ylab = "log(x)",
+        col = c(1:3), lty = 1, lwd = c(2,1,1))
+par(new=T)
+
+
+matplot(data.g[,2], type = "l", xlab = "", ylab = "", yaxt = "n", xaxt = "n",
+        col = 4)
+axis(4, col = 4, lwd = 2)
+legend("top", c("p","y","r", "m0"), col = c(1:4), lwd = 1, lty = 1,
+       bg = "white", cex = 0.85)
+title("Time Series of Mexican inflation model: 2000:01 - 2012:02")
+
+
+min.var.pls <- which(colMeans(mape.var.pls) == min(colMeans(mape.var.pls)))
+
+lower.var.pls <- sapply(1:c(K*p),
+                        function(x) list.fore.var.pls[[x]]$Lower[,objective])
+
+upper.var.pls <- sapply(1:c(K*p),
+                        function(x) list.fore.var.pls[[x]]$Upper[,objective])
+
+
+round(exp(fore.int.var) - exp(fore.int.var.pls), 2) #erores
+round(exp(data.fore[,objective]) - exp(fore.int.var.pls), 2)
+
+mat.fore.pls <- cbind(data[,objective],
+                      c(data.into[,objective], fore.var.pls[,min.var.pls]),
+                      c(data.into[,objective], lower.var.pls[,min.var.pls]),
+                      c(data.into[,objective], upper.var.pls[,min.var.pls]))
+
+mat.fore.pls[c(1:c(nrow(data.into)-1)),2] <- NA
+mat.fore.pls[c(1:c(nrow(data.into))),3] <- NA
+mat.fore.pls[c(1:c(nrow(data.into))),4] <- NA
+
+
+mat.fore.pls <- mat.fore.pls[-c(1:c(12*8)),]
+mat.fore.pls <- ts(mat.fore.pls, start = as.numeric(c(unlist(strsplit(row.names(data[97,]), '/'))[c(3,2)])), frequency = 12)
+
+ts.plot((exp(mat.fore.pls)), col = c(1,2,4,4), lwd = 2, lty = 1)
+abline(v = 2009 + 2/12, col = "gray", lty = 2, lwd = 1)
+legend("topleft", c("p-real", "p-forecast", "lower(0.05) & upper(0.95)"),
+       col = c(1,2,4), lwd = 2, lty = 1, cex = 0.85, bg = "white")
+title(paste("Forecast series ",objective,
+            ": VAR(",p,")-PLS(h=",h,",k=",min.var.pls,")", sep = ""))
+
+mat.fore.var <- cbind(data[,objective],
+                      c(data.into[,objective], fore.int.var),
+                      c(data.into[,objective], fore.int.var - ci.int.var),
+                      c(data.into[,objective], fore.int.var + ci.int.var))
+
+mat.fore.var[c(1:c(nrow(data.into)-1)),2] <- NA
+mat.fore.var[c(1:c(nrow(data.into))),3] <- NA
+mat.fore.var[c(1:c(nrow(data.into))),4] <- NA
+
+mat.fore.var <- mat.fore.var[-c(1:c(12*8)),]
+mat.fore.var <- ts(mat.fore.var, start = as.numeric(c(unlist(strsplit(row.names(data[97,]), '/'))[c(3,2)])), frequency = 12)
+
+ts.plot(mat.fore.var, col = c(1,2,4,4), lwd = 2, lty = 1)
+abline(v = 2009 + 2/12, col = "gray", lty = 2, lwd = 1)
+legend("topleft", c("p-real", "p-forecast", "lower(0.05) & upper(0.95)"),
+       col = c(1,2,4), lwd = 2, lty = 1, cex = 0.85, bg = "white")
+title(paste("Forecast series ",objective,": Integral-VAR", sep = ""))
+
+
+matrix.mape <- matrix("black", nrow = nrow(comp1),
+                      ncol = ncol(comp1))
+matrix.mape[comp1] <- "blue"
+
+plot(1, type = "p", ylim = c(1,h+2), xlim = c(1,c(p*K)), ylab = "h",
+     xlab = "k")
+for(j in 1 : c(p*K))
+{
+    for(i in 1 : h)
+    {
+        points(x=j, y = i, type = "p", pch = 18, col = matrix.mape[i,j])
+    }
+}
+legend("top", c("Integral VAR", "VAR-PLS"), col = c("black", "blue"),
+       pch = 18, cex = 0.75, bg = "white")
+title("Integral VAR vs VAR-PLS (Comparasion with MAPE)")
+
+summary(var.pls1$pls.model)
+
+colMeans(list.mape.var.pls[[min.var.pls]])
+
+mean(mape.int.var)
+cumsum(round(var.pls1$pls.model$Xvar/var.pls1$pls.model$Xtotvar, 6))
+####
+# Errores relativos
+errores.pls <- abs((exp(tail(mat.fore.pls[, 2],h))-exp(tail(data$InflacionNacional,h)))/exp(tail(data$InflacionNacional,h)))
+(errores.porcentuales <- errores.pls*100)
+(error.medio.pls <- mean(errores.porcentuales))
+#
+errores.var <- abs( (exp(tail(mat.fore.var[,2], h))- exp(tail(data$InflacionNacional,h)))/  exp(tail(data$InflacionNacional,h)) )
+(errores.porcentuales.var <- errores.var*100)
+(error.medio.var <- mean(errores.porcentuales.var ))
+##verificacion
+(errores.porcentuales <- errores.pls*100) < (errores.porcentuales.var <- errores.var*100)
+
