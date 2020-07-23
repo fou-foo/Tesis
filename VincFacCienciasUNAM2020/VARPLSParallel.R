@@ -29,7 +29,8 @@ confianza <- .95
 }
 source(paste0(path, "Funciones_VARPLSParallel.R"))# cargar funciones auxiliares
 ##########################################
-# Lectura de datos                       #
+# Lectura de datos     
+  #
 # Se espera un dataframe donde la primer columna sean las fechas de las series y la segunda la variable de interes a pronosticar
 data <- read.csv(paste0(path, "Compendio07abril2020Dolar.csv"), row.names = 1)
 ##########################################
