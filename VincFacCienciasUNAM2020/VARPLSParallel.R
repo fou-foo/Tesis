@@ -21,9 +21,9 @@ library(parallel)
 # Parametros                              #
 {
 path <- "C:\\Users\\Sandybell Ferrer\\Desktop\\Tesis\\VincFacCienciasUNAM2020\\" # ubicacion del archivo 'Funciones_VARPLSParallel.R' y los datos
-h <- 16 # numero de steps a pronostricar
+h <- 12 # numero de steps a pronostricar
 lag.max <- 6 # lag maximo para la determinacion inicial del AR(p)
-runs <- 100  # numero de iteraciones bootstrap para los intervalos de confianza
+runs <- 10000  # numero de iteraciones bootstrap para los intervalos de confianza
 crit <- "FPE(n)" # criterio con cual elegir el orden inicial del VAR(p)
 confianza <- .95
 }
@@ -86,6 +86,8 @@ t1 <- Sys.time()
 Pronosticos <- mclapply(FUN=function(x) Predict.PLS(modelo=model, original=Y, ncomp=x, h=h),                  1:componentes.practicas)
 t2 <- Sys.time()
 t2 -t1
+
+
 
 
 temp1 <- temp <- matrix(nrow = componentes.practicas, ncol = dim(data)[2])
@@ -170,3 +172,4 @@ ggplot(data = data, aes(y=Tipo.de.cambio, x=t)) + geom_line() +
                                   '2.5%' = 'orange', '97.5%' = 'orange'))
 t4 <- Sys.time()
 tabla
+-
